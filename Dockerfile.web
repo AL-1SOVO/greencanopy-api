@@ -1,0 +1,21 @@
+# 1. 同样使用轻量级的 Python 3.10 作为底层系统
+FROM python:3.10-slim
+
+# 2. 设置容器内的工作目录
+WORKDIR /app
+
+# 3. 把我们整理好的纯净版依赖清单复制进容器
+COPY requirements.txt .
+
+# 4. 使用清华源高速安装依赖（避免之前遇到的网络超时问题）
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
+
+# 5. 把当前目录下的所有代码和文件复制进容器
+COPY . .
+
+# 6. 宣告这个容器对外开放 Streamlit 专属的 8501 端口
+EXPOSE 8501
+
+# 7. 容器启动时执行的终极指令 
+# 🚨 关键陷阱：必须加上 --server.address=0.0.0.0，否则容器外部连不进网页！
+CMD ["streamlit", "run", "web_ui.py", "--server.port=8501", "--server.address=0.0.0.0"]

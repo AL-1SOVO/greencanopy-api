@@ -1,0 +1,14 @@
+# 忽略虚拟环境文件夹
+.venv/
+venv/
+
+# 忽略 Python 缓存
+__pycache__/
+*.pyc
+
+# 🚨 绝对保密：忽略环境变量配置！
+.env
+
+# 忽略本地生成的历史对话记录和数据文件
+chat_history.json
+sensor_data.csv
