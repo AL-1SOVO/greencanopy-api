@@ -62,43 +62,100 @@ tools = [{
 llm_with_tools = llm.bind_tools(tools)
 
 # ==========================================
-# 3. 傳統 API 路由 (保留給舊版客戶端使用)
+# 3. 傳統 API 路由 (已修復：支援工具調用 + 系統提示 + 身份證)
 # ==========================================
 @app.post("/chat")
 async def chat_endpoint(message: str = Form(...)):
-    messages = [HumanMessage(content=message)]
+    # 💡 修復 1：加上系統提示，讓它知道自己是誰
+    sys_prompt = "你是一個專業的農業數據分析師兼大棚助理。請主動使用工具獲取傳感器數據來回答問題。"
+    messages = [
+        SystemMessage(content=sys_prompt),
+        HumanMessage(content=message)
+    ]
+    
+    # 第一階段：讓大模型思考
     response = await llm_with_tools.ainvoke(messages)
+    
+    # 如果模型決定使用工具 (比如獲取溫度)
+    if response.tool_calls:
+        # 把模型的請求加入對話記錄
+        messages.append(response)
+        
+        # 提取工具參數並執行你的模擬函數
+        tool_call = response.tool_calls[0]
+        obs = await get_sensor_data(
+            tool_call["args"].get("location", "一號大棚"), 
+            tool_call["args"].get("sensor_type", "temperature")
+        )
+        
+        # 💡 修復 2：必須加上 name=tool_call["name"] 身份證，否則智譜會報錯或罷工！
+        messages.append(ToolMessage(
+            content=str(obs), 
+            tool_call_id=tool_call["id"], 
+            name=tool_call["name"]
+        ))
+        
+        # 第二階段：讓模型根據傳感器數據給出最終回答
+        final_response = await llm_with_tools.ainvoke(messages)
+        return {"answer": final_response.content}
+        
+    # 如果模型不打算用工具 (比如普通的閒聊)，直接返回內容
     return {"answer": response.content}
 
 # ==========================================
 # 4. 終極流式 API 路由 (支援多模態檔案與 Agent 工具)
 # ==========================================
-@app.post("/chat_stream")
-async def chat_stream_endpoint(
-    message: str = Form(...),
-    file: UploadFile = File(None)  # 接收前端傳來的可選檔案
-):
-    # --- A. 處理上傳的文件 ---
-    file_context = ""
-    if file:
-        try:
-            content = await file.read()
-            # 💡 防禦亂碼：強制使用 utf-8-sig 解碼 CSV
-            df = pd.read_csv(io.BytesIO(content), encoding="utf-8-sig")
-            file_context = f"""
-            \n\n[系統提示：用戶上傳了一份名為 {file.filename} 的數據表]
-            數據預覽 (前5行):
-            {df.head().to_markdown()}
-            
-            數據欄位包含: {', '.join(df.columns)}
-            """
-        except Exception as e:
-            print(f"文件讀取失敗: {e}")
-            file_context = f"\n\n[系統提示：讀取文件失敗，錯誤訊息 {e}]"
+# ==========================================
+# 3. 傳統 API 路由 (加裝監控打印 + 強制開口指令)
+# ==========================================
+@app.post("/chat")
+async def chat_endpoint(message: str = Form(...)):
+    print(f"\n========== 新對話開始 ==========")
+    print(f"👉 收到用戶提問: {message}")
+    
+    sys_prompt = "你是一個專業的大棚助理。獲取數據後，必須用友善的自然語言回答用戶！絕對不能輸出空白！"
+    messages = [
+        SystemMessage(content=sys_prompt),
+        HumanMessage(content=message)
+    ]
+    
+    # 第一階段：讓大模型思考
+    response = await llm_with_tools.ainvoke(messages)
+    print(f"🤖 模型第一階段思考結果: 是否調用工具? -> {bool(response.tool_calls)}")
+    
+    # 如果模型決定使用工具
+    if response.tool_calls:
+        messages.append(response)
+        
+        tool_call = response.tool_calls[0]
+        obs = await get_sensor_data(
+            tool_call["args"].get("location", "一號大棚"), 
+            tool_call["args"].get("sensor_type", "temperature")
+        )
+        print(f"📡 傳感器成功拿到數據: {obs}")
+        
+        messages.append(ToolMessage(
+            content=str(obs), 
+            tool_call_id=tool_call["id"], 
+            name=tool_call["name"]
+        ))
+        
+        # ⚡ 致命一擊：強迫大模型開口講話！
+        messages.append(HumanMessage(
+            content=f"系統提示：傳感器剛剛返回的數據是 {obs}。請立刻用自然語言把這個結果告訴用戶！"
+        ))
+        
+        # 第二階段：讓模型給出最終回答
+        final_response = await llm_with_tools.ainvoke(messages)
+        print(f"🤖 模型最終吐出的回答: '{final_response.content}'")
+        return {"answer": final_response.content}
+        
+    # 如果沒用工具，直接回答
+    print(f"🤖 模型未調用工具，直接回答: '{response.content}'")
+    return {"answer": response.content}
 
     # --- B. 定義流式生成器 (水管) ---
     async def event_generator():
-        # 💡 動態組裝系統提示詞 (解決 Agent 工具依賴症)
         sys_prompt = "你是一個專業的農業數據分析師兼大棚助理。回答請保持友善且專業。"
         if file_context:
             sys_prompt += file_context + "根据用户需求决定调用用户上传的文件或者传感器来回答用户问题"
@@ -109,13 +166,10 @@ async def chat_stream_endpoint(
         ]
         
         try:
-            # 第一階段：常規思考 (判斷是否需要調用工具，不開啟流式)
             ai_msg = await llm_with_tools.ainvoke(messages)
             messages.append(ai_msg)
             
-            # 第二階段：工具調用攔截與處理
             if ai_msg.tool_calls:
-                # 提示用戶系統正在後台運作
                 yield "📡 正在調取 5G 傳感器即時數據...\n\n"
                 
                 tool_call = ai_msg.tool_calls[0]
@@ -123,17 +177,21 @@ async def chat_stream_endpoint(
                     tool_call["args"].get("location", "大棚"), 
                     tool_call["args"].get("sensor_type", "temperature")
                 )
-                messages.append(ToolMessage(content=obs, tool_call_id=tool_call["id"]))
                 
-                # 拿到數據後，開啟流式水管輸出最終總結
+                # 💡 修復 3：流式路由這裡也要補上 name=tool_call["name"]
+                messages.append(ToolMessage(
+                    content=str(obs), 
+                    tool_call_id=tool_call["id"], 
+                    name=tool_call["name"]
+                ))
+                
                 async for chunk in llm_with_tools.astream(messages):
                     if chunk.content:
                         yield chunk.content
             else:
-                # 如果沒有調用工具 (普通聊天或正在分析表格)，直接流式輸出內容
                 for char in ai_msg.content:
                     yield char
-                    await asyncio.sleep(0.01) # 模擬一點點打字延遲，讓畫面更平滑
+                    await asyncio.sleep(0.01)
                     
         except Exception as e:
             print(f"❌ 後端運行錯誤: {e}")

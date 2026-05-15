@@ -51,7 +51,7 @@ if prompt := st.chat_input("請輸入指令..."):
                 # 🌟 UX 升級 1：載入動畫 (Spinner)
                 # 這個動畫只會在「等待第一滴水流過來」的期間顯示，一旦開始流式輸出就會自動消失
                 with st.spinner("📡 正在連線至 5G 中控大腦，請稍候..."):
-                    response = requests.post("http://host.docker.internal:8000/chat_stream", data={"message": prompt}, files=files_payload, stream=True)
+                    response = requests.post("https://greencanopy-api.onrender.com/chat", data={"message": prompt}, files=files_payload, stream=True)
                     response.raise_for_status() # 檢查是否有 500 等伺服器內部錯誤
 
                 # 🌟 開始接收流式數據
